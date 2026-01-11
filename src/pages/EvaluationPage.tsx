@@ -9,6 +9,7 @@ import {
   ScheduleOption,
   periodLabels,
   ScheduleCell,
+  days,
 } from "@/data/mockScheduleData";
 import {
   Calendar,
@@ -28,7 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-const days = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์"];
+// Remove hardcoded days
 
 export default function EvaluationPage() {
   const location = useLocation();
@@ -209,7 +210,7 @@ export default function EvaluationPage() {
                         <th className="border p-2 text-left font-medium">
                           คาบเรียน
                         </th>
-                        {days.map((day) => (
+                        {days.slice(0, constraints.daysPerWeek).map((day) => (
                           <th
                             key={day}
                             className="border p-2 text-center font-medium"
@@ -227,31 +228,34 @@ export default function EvaluationPage() {
                               {periodLabels[periodIndex] ||
                                 `คาบ ${periodIndex + 1}`}
                             </td>
-                            {days.map((day) => {
-                              const cell = option.schedule[day]?.[periodIndex];
-                              return (
-                                <td key={day} className="border p-1">
-                                  {cell && (
-                                    <div
-                                      className={`p-2 rounded cursor-pointer hover:ring-2 hover:ring-primary/50 transition-all ${cell.color}`}
-                                      onClick={() =>
-                                        setSelectedCell({ cell, periodIndex })
-                                      }
-                                    >
-                                      <div className="font-medium text-sm">
-                                        {cell.subject}
+                            {days
+                              .slice(0, constraints.daysPerWeek)
+                              .map((day) => {
+                                const cell =
+                                  option.schedule[day]?.[periodIndex];
+                                return (
+                                  <td key={day} className="border p-1">
+                                    {cell && (
+                                      <div
+                                        className={`p-2 rounded cursor-pointer hover:ring-2 hover:ring-primary/50 transition-all ${cell.color}`}
+                                        onClick={() =>
+                                          setSelectedCell({ cell, periodIndex })
+                                        }
+                                      >
+                                        <div className="font-medium text-sm">
+                                          {cell.subject}
+                                        </div>
+                                        <div className="text-xs opacity-80">
+                                          {cell.teacher}
+                                        </div>
+                                        <div className="text-xs opacity-60">
+                                          ห้อง {cell.room}
+                                        </div>
                                       </div>
-                                      <div className="text-xs opacity-80">
-                                        {cell.teacher}
-                                      </div>
-                                      <div className="text-xs opacity-60">
-                                        ห้อง {cell.room}
-                                      </div>
-                                    </div>
-                                  )}
-                                </td>
-                              );
-                            })}
+                                    )}
+                                  </td>
+                                );
+                              })}
                           </tr>
                         )
                       )}

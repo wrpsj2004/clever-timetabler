@@ -50,7 +50,15 @@ export interface Constraints {
   optimizeRoomUsage: boolean;
 }
 
-const days = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์"];
+export const days = [
+  "จันทร์",
+  "อังคาร",
+  "พุธ",
+  "พฤหัสบดี",
+  "ศุกร์",
+  "เสาร์",
+  "อาทิตย์",
+];
 
 const subjects = [
   {
@@ -130,52 +138,181 @@ export const commonSubjectCodes = [
   "MA201",
 ];
 
-function generateSchedule(
-  periodsPerDay: number,
+function calculateScore(
+  schedule: Record<string, ScheduleCell[]>,
+  constraints: Constraints,
   seed: number,
-  subjectList: SubjectDetail[]
+  optionType: "balanced" | "teacher" | "student"
+) {
+  const {
+    maxTeacherPeriodsPerDay,
+    maxStudentPeriodsPerDay,
+    avoidMorning,
+    avoidLastPeriod,
+  } = constraints;
+
+  let teacherViolations = 0;
+  let studentViolations = 0;
+  let constraintPoints = 15;
+  let totalSlots = 0;
+  let usedSlots = 0;
+
+  days.forEach((day) => {
+    const daySchedule = schedule[day] || [];
+    const teacherLoads: Record<string, number> = {};
+
+    daySchedule.forEach((cell, idx) => {
+      totalSlots++;
+      if (cell) {
+        usedSlots++;
+        teacherLoads[cell.teacher] = (teacherLoads[cell.teacher] || 0) + 1;
+
+        // Constraint: Avoid Morning (Period 1)
+        if (
+          avoidMorning &&
+          idx === 0 &&
+          (cell.subject.includes("คณิต") || cell.subject.includes("วิทย์"))
+        ) {
+          constraintPoints -= 2;
+        }
+
+        // Constraint: Avoid Last Period
+        if (avoidLastPeriod && idx === daySchedule.length - 1) {
+          constraintPoints -= 1;
+        }
+      }
+    });
+
+    Object.values(teacherLoads).forEach((load) => {
+      if (load > maxTeacherPeriodsPerDay) teacherViolations++;
+    });
+
+    if (daySchedule.filter((c) => !!c).length > maxStudentPeriodsPerDay) {
+      studentViolations++;
+    }
+  });
+
+  // Base scores
+  let teacherWorkload = Math.max(0, 20 - teacherViolations * 5);
+  let studentWorkload = Math.max(0, 20 - studentViolations * 5);
+  const noConflicts = 30;
+
+  // Option-specific weighting to create variety
+  if (optionType === "teacher") {
+    teacherWorkload = Math.min(20, teacherWorkload + 2); // Slightly favor teacher schedule
+    studentWorkload = Math.max(0, studentWorkload - 3);
+  } else if (optionType === "student") {
+    studentWorkload = Math.min(20, studentWorkload + 2); // Slightly favor student schedule
+    teacherWorkload = Math.max(0, teacherWorkload - 3);
+  }
+
+  // Add small random noise based on seed to ensure they aren't exactly the same
+  const noise = Math.sin(seed) * 3;
+  const roomEfficiency = Math.round((usedSlots / totalSlots) * 15);
+  const constraintRespect = Math.max(0, constraintPoints);
+
+  const total =
+    noConflicts +
+    teacherWorkload +
+    studentWorkload +
+    roomEfficiency +
+    constraintRespect +
+    noise;
+
+  return {
+    total: Math.min(100, Math.max(0, Math.round(total))),
+    breakdown: {
+      noConflicts,
+      teacherWorkload: Math.round(teacherWorkload),
+      studentWorkload: Math.round(studentWorkload),
+      roomEfficiency,
+      constraintRespect,
+    },
+  };
+}
+
+function generateSchedule(
+  constraints: Constraints,
+  seed: number
 ): Record<string, ScheduleCell[]> {
   const schedule: Record<string, ScheduleCell[]> = {};
+  const { subjectList, periodsPerDay, daysPerWeek, maxTeacherPeriodsPerDay } =
+    constraints;
 
-  // Use user-provided subjects or fallback to global colors if list is empty
-  const availableSubjects =
-    subjectList.length > 0
-      ? subjectList
-      : [
-          {
-            id: "m1",
-            name: "คณิตศาสตร์",
-            code: "MA101",
-            credits: 3,
-            teacher: "อ.สมชาย",
-          },
-          {
-            id: "m2",
-            name: "วิทยาศาสตร์",
-            code: "SC101",
-            credits: 3,
-            teacher: "อ.สมหญิง",
-          },
-        ];
-
-  days.forEach((day, dayIndex) => {
-    const daySchedule: ScheduleCell[] = [];
-    for (let i = 0; i < periodsPerDay; i++) {
-      const subjectIndex = (dayIndex + i + seed) % availableSubjects.length;
-      const targetSubject = availableSubjects[subjectIndex];
-
-      // Map subject name to a color from our predefined subjects list for visual variety
-      const colorRef =
-        subjects.find((s) => s.name === targetSubject.name) ||
-        subjects[subjectIndex % subjects.length];
-
-      daySchedule.push({
-        subject: targetSubject.name,
-        code: targetSubject.code,
-        teacher: targetSubject.teacher,
-        room: rooms[(dayIndex + seed) % rooms.length],
-        color: colorRef.color,
+  // 1. Prepare pool of "slots" based on subjects and their credits
+  // Each credit = 1 period per week
+  const periodPool: { subject: string; code: string; teacher: string }[] = [];
+  subjectList.forEach((sub) => {
+    for (let i = 0; i < sub.credits; i++) {
+      periodPool.push({
+        subject: sub.name,
+        code: sub.code,
+        teacher: sub.teacher,
       });
+    }
+  });
+
+  // Shuffle pool using seed-based randomization
+  const shuffledPool = [...periodPool].sort((a, b) => {
+    const pseudoRandom =
+      Math.sin(seed + a.code.length + b.code.charCodeAt(0)) * 10000;
+    return pseudoRandom - Math.floor(pseudoRandom) - 0.5;
+  });
+
+  // 2. Distribute into daily schedules
+  const currentTeacherLoads: Record<string, Record<string, number>> = {}; // day -> teacher -> count
+
+  // Use seed to skip some items in the pool to start differently
+  const initialSkip = seed % Math.max(1, shuffledPool.length);
+  for (let i = 0; i < initialSkip; i++) {
+    const item = shuffledPool.shift();
+    if (item) shuffledPool.push(item);
+  }
+
+  days.slice(0, daysPerWeek).forEach((day, dayIdx) => {
+    const daySchedule: ScheduleCell[] = [];
+    currentTeacherLoads[day] = {};
+
+    for (let i = 0; i < periodsPerDay; i++) {
+      if (shuffledPool.length === 0) {
+        daySchedule.push(null as unknown as ScheduleCell);
+        continue;
+      }
+
+      // Find a subject that doesn't violate teacher workload for today
+      let foundIndex = -1;
+      for (let j = 0; j < shuffledPool.length; j++) {
+        const potential = shuffledPool[j];
+        const teacherLoad = currentTeacherLoads[day][potential.teacher] || 0;
+
+        if (teacherLoad < maxTeacherPeriodsPerDay) {
+          foundIndex = j;
+          break;
+        }
+      }
+
+      if (foundIndex !== -1) {
+        const item = shuffledPool.splice(foundIndex, 1)[0];
+
+        // Track teacher load
+        currentTeacherLoads[day][item.teacher] =
+          (currentTeacherLoads[day][item.teacher] || 0) + 1;
+
+        // Map subject name to a color
+        const colorRef =
+          subjects.find((s) => s.name === item.subject) ||
+          subjects[Math.abs(seed % subjects.length)];
+
+        daySchedule.push({
+          subject: item.subject,
+          code: item.code,
+          teacher: item.teacher,
+          room: rooms[(seed + i) % rooms.length],
+          color: colorRef.color,
+        });
+      } else {
+        daySchedule.push(null as unknown as ScheduleCell);
+      }
     }
     schedule[day] = daySchedule;
   });
@@ -186,111 +323,56 @@ function generateSchedule(
 export function generateMockOptions(
   constraints: Constraints
 ): ScheduleOption[] {
-  const options: ScheduleOption[] = [
-    {
-      id: "A",
-      name: "ทางเลือก A",
-      score: 92,
-      level: "ดีมาก",
-      schedule: generateSchedule(
-        constraints.periodsPerDay,
-        0,
-        constraints.subjectList
-      ),
-      pros: [
-        "ไม่มีคาบชนของครูทุกวัน",
-        "นักเรียนไม่เรียนเกิน " +
-          constraints.maxStudentPeriodsPerDay +
-          " คาบต่อวัน",
-        "การใช้ห้องเรียนมีประสิทธิภาพสูง (95%)",
-        "วิชาหนักกระจายตัวดี ไม่อยู่ติดกัน",
-        "ครูแต่ละคนมีภาระงานสมดุล",
-      ],
-      cons: [
-        "มีวิชาหนักอยู่คาบเช้าบางวัน",
-        "ครูบางคนมีคาบติดกัน 3 คาบ ในวันพุธ",
-      ],
-      suggestions: [
-        "สามารถสลับวิชาคณิตศาสตร์วันจันทร์ไปคาบบ่ายได้",
-        "ตารางนี้เหมาะสมที่สุดตามเงื่อนไขที่กำหนด",
-      ],
-      scoreBreakdown: {
-        noConflicts: 30,
-        teacherWorkload: 20,
-        studentWorkload: 18,
-        roomEfficiency: 14,
-        constraintRespect: 10,
-      },
-    },
-    {
-      id: "B",
-      name: "ทางเลือก B",
-      score: 78,
-      level: "ดี",
-      schedule: generateSchedule(
-        constraints.periodsPerDay,
-        2,
-        constraints.subjectList
-      ),
-      pros: [
-        "ไม่มีวิชาหนักในคาบเช้า",
-        "ครูไม่มีคาบติดกันเกิน 2 คาบ",
-        "นักเรียนมีเวลาพักเพียงพอ",
-      ],
-      cons: [
-        "การใช้ห้องเรียนมีประสิทธิภาพปานกลาง (75%)",
-        "วิชาหนักบางวันยังอยู่ติดกัน",
-        "มีห้องว่างบางคาบ",
-      ],
-      suggestions: [
-        "ควรพิจารณาจัดวิชาเพิ่มในช่วงบ่ายวันศุกร์",
-        "อาจสลับห้องเรียนเพื่อเพิ่มประสิทธิภาพ",
-      ],
-      scoreBreakdown: {
-        noConflicts: 28,
-        teacherWorkload: 18,
-        studentWorkload: 15,
-        roomEfficiency: 10,
-        constraintRespect: 7,
-      },
-    },
-    {
-      id: "C",
-      name: "ทางเลือก C",
-      score: 65,
-      level: "ปานกลาง",
-      schedule: generateSchedule(
-        constraints.periodsPerDay,
-        4,
-        constraints.subjectList
-      ),
-      pros: [
-        "ใช้ห้องเรียนได้ครบทุกห้อง",
-        "นักเรียนไม่เรียนเกินกำหนด",
-        "ครูบางส่วนมีภาระเบา",
-      ],
-      cons: [
-        "มีวิชาหนักติดกัน 2 คาบ ในบางวัน",
-        "ครู 2 คนมีคาบติดกัน 4 คาบ",
-        "วิชายากอยู่ในคาบเช้า 3 วัน",
-        "การกระจายวิชาไม่สมดุล",
-      ],
-      suggestions: [
-        "ควรปรับโครงสร้างตารางใหม่หากต้องการคุณภาพสูงขึ้น",
-        "พิจารณาสลับวิชาระหว่างวันเพื่อลดภาระครู",
-        "แนะนำให้เลือกทางเลือก A หรือ B แทน",
-      ],
-      scoreBreakdown: {
-        noConflicts: 20,
-        teacherWorkload: 15,
-        studentWorkload: 15,
-        roomEfficiency: 10,
-        constraintRespect: 5,
-      },
-    },
+  const seeds = [10, 42, 99];
+  const names = [
+    "ทางเลือก A (สมดุลที่สุด)",
+    "ทางเลือก B (เน้นตารางครู)",
+    "ทางเลือก C (เน้นตารางนักเรียน)",
+  ];
+  const types: ("balanced" | "teacher" | "student")[] = [
+    "balanced",
+    "teacher",
+    "student",
   ];
 
-  return options;
+  const options: ScheduleOption[] = seeds.map((seed, index) => {
+    const schedule = generateSchedule(constraints, seed);
+    const scoreData = calculateScore(schedule, constraints, seed, types[index]);
+
+    let level: "ดีมาก" | "ดี" | "ปานกลาง" = "ปานกลาง";
+    if (scoreData.total >= 85) level = "ดีมาก";
+    else if (scoreData.total >= 70) level = "ดี";
+
+    return {
+      id: String.fromCharCode(65 + index),
+      name: names[index],
+      score: scoreData.total,
+      level: level,
+      schedule,
+      pros: [
+        index === 0
+          ? "กระจายรายวิชาได้สม่ำเสมอที่สุด"
+          : index === 1
+          ? "ครูมีเวลาเตรียมการสอนเพิ่มขึ้น"
+          : "นักเรียนไม่มีวิชาหนักติดต่อกัน",
+        "เคารพเงื่อนไขพื้นฐานครบถ้วน",
+        `ประสิทธิภาพการใช้ห้อง ${scoreData.breakdown.roomEfficiency * 6}%`,
+      ],
+      cons: [
+        scoreData.total < 80
+          ? "มีบางเงื่อนไขที่อาจปรับปรุงได้"
+          : "ไม่มีข้อจำกัดร้ายแรง",
+        index === 2 ? "ครูบางท่านอาจมีคาบว่างมากเกินไป" : "",
+      ].filter(Boolean),
+      suggestions: [
+        "สามารถนำไปใช้งานประจำปีการศึกษาได้ทันที",
+        "ควรตรวจสอบความพร้อมของห้องเรียนเพิ่มเติม",
+      ],
+      scoreBreakdown: scoreData.breakdown,
+    };
+  });
+
+  return options.sort((a, b) => b.score - a.score);
 }
 
 export const defaultConstraints: Constraints = {

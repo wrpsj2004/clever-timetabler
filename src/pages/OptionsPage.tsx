@@ -9,6 +9,7 @@ import {
   generateMockOptions,
   ScheduleOption,
   periodLabels,
+  days,
 } from "@/data/mockScheduleData";
 import {
   Calendar,
@@ -20,7 +21,7 @@ import {
   CheckCircle2,
 } from "lucide-react";
 
-const days = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์"];
+// Remove hardcoded days
 
 const rankIcons = [
   { icon: Trophy, color: "text-yellow-500" },
