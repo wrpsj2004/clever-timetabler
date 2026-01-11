@@ -240,7 +240,6 @@ function generateSchedule(
     constraints;
 
   // 1. Prepare pool of "slots" based on subjects and their credits
-  // Each credit = 1 period per week
   const periodPool: { subject: string; code: string; teacher: string }[] = [];
   subjectList.forEach((sub) => {
     for (let i = 0; i < sub.credits; i++) {
@@ -252,67 +251,63 @@ function generateSchedule(
     }
   });
 
-  // Shuffle pool using seed-based randomization
-  const shuffledPool = [...periodPool].sort((a, b) => {
-    const pseudoRandom =
-      Math.sin(seed + a.code.length + b.code.charCodeAt(0)) * 10000;
+  // Calculate total positions available
+  const activeDays = days.slice(0, daysPerWeek);
+  const totalPositions = activeDays.length * periodsPerDay;
+  const positions = Array.from({ length: totalPositions }, (_, i) => i);
+
+  // Shuffle positions based on seed to spread subjects
+  const shuffledPositions = [...positions].sort((a, b) => {
+    const pseudoRandom = Math.sin(seed + a * 1.5 + b * 2.1) * 10000;
     return pseudoRandom - Math.floor(pseudoRandom) - 0.5;
   });
 
-  // 2. Distribute into daily schedules
+  // 2. Assign subjects to shuffled positions
+  const assignments: Record<number, ScheduleCell> = {};
   const currentTeacherLoads: Record<string, Record<string, number>> = {}; // day -> teacher -> count
+  activeDays.forEach((d) => (currentTeacherLoads[d] = {}));
 
-  // Use seed to skip some items in the pool to start differently
-  const initialSkip = seed % Math.max(1, shuffledPool.length);
-  for (let i = 0; i < initialSkip; i++) {
-    const item = shuffledPool.shift();
-    if (item) shuffledPool.push(item);
+  let poolIdx = 0;
+  for (
+    let posIdx = 0;
+    posIdx < shuffledPositions.length && poolIdx < periodPool.length;
+    posIdx++
+  ) {
+    const pos = shuffledPositions[posIdx];
+    const dayIdx = Math.floor(pos / periodsPerDay);
+    const day = activeDays[dayIdx];
+    const item = periodPool[poolIdx];
+
+    const teacherLoad = currentTeacherLoads[day][item.teacher] || 0;
+
+    // Check teacher workload constraint if possible, but don't get stuck
+    if (teacherLoad < maxTeacherPeriodsPerDay) {
+      const colorRef =
+        subjects.find((s) => s.name === item.subject) ||
+        subjects[Math.abs(seed + poolIdx) % subjects.length];
+
+      assignments[pos] = {
+        subject: item.subject,
+        code: item.code,
+        teacher: item.teacher,
+        room: rooms[(seed + pos) % rooms.length],
+        color: colorRef.color,
+      };
+
+      currentTeacherLoads[day][item.teacher] = teacherLoad + 1;
+      poolIdx++;
+    }
   }
 
-  days.slice(0, daysPerWeek).forEach((day, dayIdx) => {
+  // Handle remaining subjects if any (force placement if teacher load is okay elsewhere)
+  // (In a real DSS, this would be a backtracking algorithm)
+
+  // 3. Construct the actual schedule object
+  activeDays.forEach((day, dIdx) => {
     const daySchedule: ScheduleCell[] = [];
-    currentTeacherLoads[day] = {};
-
-    for (let i = 0; i < periodsPerDay; i++) {
-      if (shuffledPool.length === 0) {
-        daySchedule.push(null as unknown as ScheduleCell);
-        continue;
-      }
-
-      // Find a subject that doesn't violate teacher workload for today
-      let foundIndex = -1;
-      for (let j = 0; j < shuffledPool.length; j++) {
-        const potential = shuffledPool[j];
-        const teacherLoad = currentTeacherLoads[day][potential.teacher] || 0;
-
-        if (teacherLoad < maxTeacherPeriodsPerDay) {
-          foundIndex = j;
-          break;
-        }
-      }
-
-      if (foundIndex !== -1) {
-        const item = shuffledPool.splice(foundIndex, 1)[0];
-
-        // Track teacher load
-        currentTeacherLoads[day][item.teacher] =
-          (currentTeacherLoads[day][item.teacher] || 0) + 1;
-
-        // Map subject name to a color
-        const colorRef =
-          subjects.find((s) => s.name === item.subject) ||
-          subjects[Math.abs(seed % subjects.length)];
-
-        daySchedule.push({
-          subject: item.subject,
-          code: item.code,
-          teacher: item.teacher,
-          room: rooms[(seed + i) % rooms.length],
-          color: colorRef.color,
-        });
-      } else {
-        daySchedule.push(null as unknown as ScheduleCell);
-      }
+    for (let pIdx = 0; pIdx < periodsPerDay; pIdx++) {
+      const pos = dIdx * periodsPerDay + pIdx;
+      daySchedule.push(assignments[pos] || (null as unknown as ScheduleCell));
     }
     schedule[day] = daySchedule;
   });
